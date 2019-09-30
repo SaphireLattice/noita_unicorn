@@ -50,7 +50,7 @@ namespace Unicorn
                     }
                     files.Sort((a, b) => a.Offset.CompareTo(b.Offset));
                     if (args.Length > 1)
-                        files = files.FindAll((f) => f.Path.Contains(args[1]) || (int.TryParse(args[1], out var tmp) && f.Id == tmp));
+                        files = files.FindAll((f) => f.Path.Contains(args[1]) || (args[1].StartsWith("#") && int.TryParse(args[1].Substring(1), out var tmp) && f.Id == tmp));
                     foreach (var file in files) {
                         Process currentProcess = Process.GetCurrentProcess();
                         Directory.CreateDirectory(Path.GetDirectoryName(file.Path));
