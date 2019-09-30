@@ -1,88 +1,127 @@
 ﻿using System;
-using System.IO;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 
-namespace noita_unicorn
+namespace Unicorn
 {
     class Program
     {
-
-        /// <summary>
-        /// The WizardPak file reader
-        /// </summary>
-        /// <param name="fileOption">An option whose argument is parsed as a FileInfo</param>
-        /// <param name="seed">seed to gen</param>
-        static void Main(int seed = int.MaxValue - 1)
+        static readonly byte[] AESKey = NollaPRNG.Get16Seeded(0);
+        static void Main(string[] args)
         {
-            //Console.WriteLine($"Hello World! {fileOption?.Name}");
-            var zeroResult = new byte[] {
-                0xC3, 0xD2, 0xBA, 0xE7,
-                0xC3, 0xF3, 0x62, 0x9A,
-                0x17, 0x53, 0x71, 0xD6,
-                0xB1, 0xF5, 0x05, 0xAA
-            };
-            //
-            var zeroSeeded = NollaPRNG.Seeded16(0);
-            if (!Enumerable.SequenceEqual(zeroSeeded, zeroResult)) {
-            Console.WriteLine($"{BitConverter.ToString(zeroSeeded)}");
-                throw new Exception("prng(0) is incorrect!");
+            if (args.Length < 1) {
+                Console.Error.WriteLine("File path argument required!");
+                return;
             }
-            Console.WriteLine($"{BitConverter.ToString(NollaPRNG.Seeded16(seed, true))}");
-            return;
-            foreach (var i in new int[]{0,1,7,int.MaxValue-1}) {
-                Console.WriteLine($"{BitConverter.ToString(NollaPRNG.Seeded16(i))}");
+            var fileInfo = new FileInfo(args[0]);
+            if (!fileInfo.Exists) {
+                Console.Error.WriteLine($"File {fileInfo.FullName} does not exist");
+                return;
+            }
+
+            using (var stream = fileInfo.OpenRead()) {
+                var header = DecryptStream(stream, 0x10, 1);
+                var numFiles = BitConverter.ToInt32(new ArraySegment<byte>(header, 4, 4));
+                var tocSize  = BitConverter.ToInt32(new ArraySegment<byte>(header, 8, 4));
+                Console.WriteLine($"WizardPak: {numFiles} files");
+
+                var files = new List<FileDescriptor>();
+                var tocBytes = DecryptStream(stream, tocSize - 0x10, int.MaxValue - 1);
+                Console.WriteLine(BitConverter.ToString(new ArraySegment<byte>(tocBytes, 0, 0x10).ToArray()));
+                using (var tocStream = new MemoryStream(tocBytes))
+                using (var reader = new BinaryReader(tocStream))
+                {
+                    for (int i = 0; i < numFiles; i++)
+                    {
+                        var offset = reader.ReadInt32();
+                        var length = reader.ReadInt32();
+                        var pathLength = reader.ReadInt32();
+                        files.Add(new FileDescriptor {
+                            Path = Encoding.UTF8.GetString(reader.ReadBytes(pathLength)),
+                            Offset = offset,
+                            Length = length,
+                            Id = i
+                        });
+                        //Console.WriteLine(files[files.Count - 1]);
+                    }
+                    files.Sort((a, b) => a.Offset.CompareTo(b.Offset));
+                    if (args.Length > 1)
+                        files = files.FindAll((f) => f.Path.Contains(args[1]) || (int.TryParse(args[1], out var tmp) && f.Id == tmp));
+                    foreach (var file in files) {
+                        Process currentProcess = Process.GetCurrentProcess();
+                        Directory.CreateDirectory(Path.GetDirectoryName(file.Path));
+                        using (var fileStream = File.OpenWrite(Path.Combine(Directory.GetCurrentDirectory(), file.Path))) {
+                            // || (int.TryParse(args[1], out var tmp) && tmp == file.Id)
+                            Console.Write($"{file} - #{file.Id}, {file.Length} bytes at {file.Offset}");
+                            if (stream.Position != file.Offset) {
+                                Console.Write($" (seeking {file.Offset - stream.Position})");
+                                stream.Seek(file.Offset, SeekOrigin.Begin);
+                            }
+                            Console.WriteLine();
+                            fileStream.Write(DecryptStream(stream, file.Length, file.Id));
+                        }
+                    }
+                }
             }
         }
 
+        static byte[] DecryptStream(Stream stream, int length, int iv) {
+            var plaintext = new byte[length];
+            using (var aesAlg = new Aes128CounterMode(NollaPRNG.Get16Seeded(iv)))
+            {
+                // Create a decryptor to perform the stream transform.
+                var decryptor = aesAlg.CreateDecryptor(AESKey, null);
+                var buffer = new byte[length];
+                stream.Read(buffer, 0, length);
+                using (MemoryStream limitedStream = new MemoryStream(buffer)) {
+                    using (CryptoStream csDecrypt = new CryptoStream(limitedStream, decryptor, CryptoStreamMode.Read, true))
+                    {
+                        csDecrypt.Read(plaintext, 0, length);
+                    }
+                }
+            }
+            return plaintext;
+        }
+    }
 
+    class FileDescriptor {
+        public string Path { get; set; }
+        public int Offset { get; set; }
+        public int Length { get; set; }
+
+        public int Id { get; set; }
+
+        override public string ToString() {
+            return Path;
+        }
     }
 
     class NollaPRNG
     {
-        const int SEED_BASE = 23456789 + 11 * 11;
+        const int SEED_BASE = 23456789 + 1 + 11 * 11;
         private double Seed { get; set; }
-        private bool Debug { get; }
 
-        NollaPRNG(int seed, int seedBase = SEED_BASE, bool debug = false) {
-            Debug = debug;
-            if (Debug)
-                Console.WriteLine($"{seed} {(uint) seed + seedBase}");
+        NollaPRNG(int seed, int seedBase = SEED_BASE) {
             Seed = (double) (uint) seedBase + seed;
-            if (Debug)
-                Console.WriteLine($"{Seed}");
             Next();
         }
 
         double Next() {
-            long lseed = (int)Seed * -2092037281L;
-            var seedbytes = BitConverter.GetBytes(lseed);
-            Array.Reverse(seedbytes);
-            if (Debug)
-            Console.WriteLine(
-                $"{(int) Seed} {lseed} {BitConverter.IsLittleEndian}\n" +
-                $"{BitConverter.ToString(seedbytes)}  " +
-                $"LO {BitConverter.ToString(BitConverter.GetBytes((uint) lseed))} | " +
-                $"HI {BitConverter.ToString(BitConverter.GetBytes((uint) (lseed >> 0x20)))} -> " +
-                $"{BitConverter.ToString(BitConverter.GetBytes((int)(lseed >> 0x20) + (int)Seed))}" +
-                $" ({(int)(lseed >> 0x20) + (int)Seed})"
-            );
-            uint edx = (uint) ((int) (lseed >> 0x20) + (int) Seed);
-            if (Debug)
-                Console.WriteLine($"{(int) Seed * 0x41a7}, {(int) edx >> 0x10}, {((int) edx >> 0x10) * Int32.MaxValue}");
-            uint iseed = (uint) ( (int) Seed * 0x41a7 ) - (uint) ( ((int) edx >> 0x10) * Int32.MaxValue );
-
-            Seed = + (int) iseed;
-            if (Debug)
-                Console.WriteLine($"{Seed}, {BitConverter.ToString(BitConverter.GetBytes(Seed * 4.656612875E-10))}");
-            return Seed / Int32.MaxValue;//4.656612875E-10;
+            // There's definitely a better way to write this, but I can't find it
+            // Would love some help
+            int temp = (int) (((int)Seed * -2092037281L) >> 0x20) + (int) Seed;
+            Seed = ((int) Seed * 0x41a7 ) - ((temp >> 0x10) * int.MaxValue);
+            return Seed / int.MaxValue;
         }
 
         byte[] Next16() {
             var value = new byte[16];
-            for (int i = 0; i < 4; i++)
-            {
+            for (int i = 0; i < 4; i++) {
                 double valueee = Next() * int.MinValue;
-                Console.WriteLine($"{valueee}");
                 byte[] bytes = BitConverter.GetBytes((int) valueee);
                 Buffer.BlockCopy(
                     bytes, 0,
@@ -90,11 +129,12 @@ namespace noita_unicorn
                     4
                 );
             }
+            Console.WriteLine($"{BitConverter.ToString(value)}");
             return value;
         }
 
-        public static byte[] Seeded16(int seed, bool debug = false, int seedBase = 0x0165ec8f) {
-            var prng = new NollaPRNG(seed, seedBase, debug);
+        public static byte[] Get16Seeded(int seed, int seedBase = SEED_BASE) {
+            var prng = new NollaPRNG(seed, seedBase);
             return prng.Next16();
         }
     }
