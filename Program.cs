@@ -113,8 +113,24 @@ namespace Unicorn
         double Next() {
             // There's definitely a better way to write this, but I can't find it
             // Would love some help
-            int temp = (int) (((int)Seed * -2092037281L) >> 0x20) + (int) Seed;
-            Seed = ((int) Seed * 0x41a7 ) - ((temp >> 0x10) * int.MaxValue);
+            long lseed = ((int)Seed * -2092037281L);
+            var seedbytes = BitConverter.GetBytes(lseed);
+            Array.Reverse(seedbytes);
+            Console.WriteLine(
+                $"{(int) Seed} {lseed} {BitConverter.IsLittleEndian}\n" +
+                $"{BitConverter.ToString(seedbytes)}  " +
+                $"LO {BitConverter.ToString(BitConverter.GetBytes((uint) lseed))} | " +
+                $"HI {BitConverter.ToString(BitConverter.GetBytes((uint) (lseed >> 0x20)))} -> " +
+                $"{BitConverter.ToString(BitConverter.GetBytes((int)(lseed >> 0x20) + (int)Seed))}" +
+                $" ({(int)(lseed >> 0x20) + (int)Seed})"
+            );
+            int temp = ((int) ((int)Seed * -2092037281L >> 0x20) + (int) Seed) >> 0x10;
+            Console.WriteLine($"{(int) Seed * 0x41a7}, {temp}, {(temp) * Int32.MaxValue}");
+
+            Seed = ((int) Seed * 0x41a7 ) - (temp * int.MaxValue + (temp < 0 ? 1 : 0));
+            //it's abs+1, because M A G I C, damn it
+            if (Seed < 0) Seed += int.MaxValue;
+            //Console.WriteLine($"{Seed}, {Seed / int.MaxValue == Seed * 4.6566128750000002e-10}, {BitConverter.ToString(BitConverter.GetBytes((int) -Seed))}");
             return Seed / int.MaxValue;
         }
 
@@ -122,6 +138,7 @@ namespace Unicorn
             var value = new byte[16];
             for (int i = 0; i < 4; i++) {
                 double valueee = Next() * int.MinValue;
+                Console.WriteLine($"{valueee}\n");
                 byte[] bytes = BitConverter.GetBytes((int) valueee);
                 Buffer.BlockCopy(
                     bytes, 0,
