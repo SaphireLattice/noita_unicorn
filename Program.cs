@@ -1,8 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -17,6 +18,14 @@ namespace Unicorn
                 PrintHelp();
                 return;
             }
+
+            var fileInfo = new FileInfo(args[0]);
+            // Suport drag-and-drop onto exe
+            if (fileInfo.Exists) {
+                WakMain(args);
+                return;
+            }
+
             if (args.Length > 1 && args[0] == "beta") {
                 NollaPrng.BETA_SEED = true;
                 args = args.Skip(1).ToArray();
@@ -46,11 +55,12 @@ namespace Unicorn
 
         static void PrintHelp(bool commandsOnly = false) {
             if (!commandsOnly) {
-                Console.WriteLine("Unicorn - An all-in-one utility for Noita files and things");
+                Console.WriteLine($"Unicorn v{Assembly.GetEntryAssembly().GetName().Version} - An all-in-one utility for Noita files and things");
             }
             Console.WriteLine("Commands (use beta [command] to use beta compatible prng):");
-            Console.WriteLine("wak [file] ([name substring] | #[id] | @pos) - unpack given wak archive, with optional filter, recipe (todo: packing)");
-            Console.WriteLine("recipe [seed] - show Lively Concotion and Alchemical Precursor recipes for given seed");
+            Console.WriteLine("\twak [file] ([name substring] | #[id] | @pos) - unpack given wak archive, with optional filter, recipe (todo: packing)");
+            Console.WriteLine("\trecipe [seed] - show Lively Concotion and Alchemical Precursor recipes for given seed");
+            Console.WriteLine("\trng [seed] ([seed] ...) - show prng result for given state, also prints IV/key bytes for AES counter");
         }
 
         static void WakMain(string[] args) {
