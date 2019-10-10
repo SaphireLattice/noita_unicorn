@@ -8,11 +8,52 @@ using System.Text;
 
 namespace Unicorn
 {
-    class Program
+    class Unicorn
     {
-        static readonly byte[] AESKey = NollaPRNG.Get16Seeded(0);
+        static readonly byte[] AESKey = NollaPrng.Get16Seeded(0);
         static void Main(string[] args)
         {
+            if (args.Length < 1) {
+                PrintHelp();
+                return;
+            }
+            if (args.Length > 1 && args[0] == "beta") {
+                NollaPrng.BETA_SEED = true;
+                args = args.Skip(1).ToArray();
+            }
+            var command = args[0];
+            args = args.Skip(1).ToArray();
+            switch (command)
+            {
+                case "help":
+                    PrintHelp();
+                    break;
+                case "wak":
+                    WakMain(args);
+                    break;
+                case "recipe":
+                    MaterialPicker.DoMain(args);
+                    break;
+                case "rng":
+                    NollaPrng.DoMain(args);
+                    break;
+                default:
+                    Console.Error.WriteLine($"Unknown command {args[0]}");
+                PrintHelp();
+                    break;
+            }
+        }
+
+        static void PrintHelp(bool commandsOnly = false) {
+            if (!commandsOnly) {
+                Console.WriteLine("Unicorn - An all-in-one utility for Noita files and things");
+            }
+            Console.WriteLine("Commands (use beta [command] to use beta compatible prng):");
+            Console.WriteLine("wak [file] ([name substring] | #[id] | @pos) - unpack given wak archive, with optional filter, recipe (todo: packing)");
+            Console.WriteLine("recipe [seed] - show Lively Concotion and Alchemical Precursor recipes for given seed");
+        }
+
+        static void WakMain(string[] args) {
             if (args.Length < 1) {
                 Console.Error.WriteLine("File path argument required!");
                 return;
@@ -31,7 +72,6 @@ namespace Unicorn
 
                 var files = new List<FileDescriptor>();
                 var tocBytes = DecryptStream(stream, tocSize - 0x10, int.MaxValue - 1);
-                Console.WriteLine(BitConverter.ToString(new ArraySegment<byte>(tocBytes, 0, 0x10).ToArray()));
                 using (var tocStream = new MemoryStream(tocBytes))
                 using (var reader = new BinaryReader(tocStream))
                 {
@@ -46,13 +86,15 @@ namespace Unicorn
                             Length = length,
                             Id = i
                         });
-                        //Console.WriteLine(files[files.Count - 1]);
                     }
                     files.Sort((a, b) => a.Offset.CompareTo(b.Offset));
                     if (args.Length > 1)
-                        files = files.FindAll((f) => f.Path.Contains(args[1]) || (args[1].StartsWith("#") && int.TryParse(args[1].Substring(1), out var tmp) && f.Id == tmp));
+                        files = files.FindAll( (f) =>
+                                f.Path.Contains(args[1]) ||
+                                (args[1].StartsWith("#") && int.TryParse(args[1].Substring(1), out var id) && f.Id == id) ||
+                                (args[1].StartsWith("@") && int.TryParse(args[1].Substring(1), out var pos) && f.Offset >= pos && f.Offset + f.Length < pos)
+                            );
                     foreach (var file in files) {
-                        Process currentProcess = Process.GetCurrentProcess();
                         Directory.CreateDirectory(Path.GetDirectoryName(file.Path));
                         using (var fileStream = File.OpenWrite(Path.Combine(Directory.GetCurrentDirectory(), file.Path))) {
                             // || (int.TryParse(args[1], out var tmp) && tmp == file.Id)
@@ -71,7 +113,7 @@ namespace Unicorn
 
         static byte[] DecryptStream(Stream stream, int length, int iv) {
             var plaintext = new byte[length];
-            using (var aesAlg = new Aes128CounterMode(NollaPRNG.Get16Seeded(iv)))
+            using (var aesAlg = new Aes128CounterMode(NollaPrng.Get16Seeded(iv)))
             {
                 // Create a decryptor to perform the stream transform.
                 var decryptor = aesAlg.CreateDecryptor(AESKey, null);
@@ -100,59 +142,173 @@ namespace Unicorn
         }
     }
 
-    class NollaPRNG
+    class MaterialPicker
     {
-        const int SEED_BASE = 23456789 + 1 + 11 * 11;
-        private double Seed { get; set; }
+        public static void DoMain(string[] args) {
+            if (args.Length < 1) {
+                Console.Error.WriteLine("Seed required!");
+                return;
+            }
+            PickForSeed((uint) long.Parse(args[0]));
+            return;
+        }
+        static Dictionary<string, string> Names = new Dictionary<string, string>{
+            ["a"] = "b",
+            ["a"] = "b",
+            ["a"] = "b",
+            ["a"] = "b",
+        };
+        static List<string> LIQUIDS = new List<string>{
+            "water",
+            "water_ice",
+            "water_swamp",
+            "oil",
+            "alcohol",
+            "swamp",
+            "mud",
+            "blood",
+            "blood_fungi",
+            "blood_worm",
+            "radioactive_liquid", // aka "toxic sludge"
+            "cement",
+            "acid",
+            "lava",
+            "urine",
+            "poison",
+            "magic_liquid_teleportation",
+            "magic_liquid_polymorph",
+            "magic_liquid_random_polymorph",
+            "magic_liquid_berserk",
+            "magic_liquid_charm",
+            "magic_liquid_invisibility"
+        };
 
-        NollaPRNG(int seed, int seedBase = SEED_BASE) {
+        static List<string> ALCHEMY = new List<string>{
+            "sand",
+            "bone",
+            "soil",
+            "honey",
+            "slime",
+            "snow",
+            "rotten_meat",
+            "wax",
+            "gold",
+            "silver",
+            "copper",
+            "brass",
+            "diamond",
+            "coal",
+            "gunpowder",
+            "gunpowder_explosive",
+            "grass",
+            "fungi"
+        };
+        NollaPrng PRNG;
+        List<string> Materials = new List<string>();
+        public MaterialPicker(NollaPrng prng, uint worldSeed) {
+            PRNG = prng;
+            PickMaterials(LIQUIDS, 3);
+            PickMaterials(ALCHEMY, 1);
+            ShuffleList(worldSeed);
+            PRNG.Next();
+            PRNG.Next();
+        }
+
+        void PickMaterials(List<string> source, int count) {
+            int counter = 0;
+            int failed = 0;
+            while (counter < count && failed < 99999) {
+                var picked = source[(int) (PRNG.Next() * source.Count)];
+                if (!Materials.Any(v => v == picked)) {
+                    Materials = Materials.Append(picked).ToList();
+                    counter++;
+                } else {
+                    failed++;
+                }
+            }
+            return;
+        }
+
+        void ShuffleList(uint worldSeed) {
+            var prng = new NollaPrng((worldSeed >> 1) + 12534);
+            // Toxic sludge, blood, and soil for first
+            for (int i = Materials.Count - 1; i >= 0; i--) {
+                int rand = (int) (prng.Next() * (i + 1));
+                var tmp = Materials[i];
+                Materials[i] = Materials[rand];
+                Materials[rand] = tmp;
+            }
+        }
+
+        override public string ToString() {
+            return $"{Materials[0]}, {Materials[1]}, {Materials[2]}";
+        }
+
+        public static void PickForSeed(uint worldSeed) {
+            var prng = new NollaPrng(worldSeed * 0.17127000 + 1323.59030000);
+            // Preheat random!
+            for (int i = 0; i < 5; i++)
+                prng.Next();
+
+            Console.WriteLine($"Seed: {worldSeed}");
+            Console.WriteLine($"Lively Concotion: {new MaterialPicker(prng, worldSeed).ToString()}");
+            Console.WriteLine($"Alchemical Precursor: {new MaterialPicker(prng, worldSeed).ToString()}");
+            Console.WriteLine("");
+        }
+    }
+
+    class NollaPrng
+    {
+        public static bool BETA_SEED = false;
+        const int SEED_BASE = 23456789 + 1 + 11 * 11;
+        public double Seed { get; private set; }
+
+        public NollaPrng(int seed, int seedBase = SEED_BASE) {
             Seed = (double) (uint) seedBase + seed;
+            if (BETA_SEED && Seed >= 2147483647.0) {
+                Seed *= 0.5;
+            }
             Next();
         }
 
-        double Next() {
-            // There's definitely a better way to write this, but I can't find it
-            // Would love some help
-            long lseed = ((int)Seed * -2092037281L);
-            var seedbytes = BitConverter.GetBytes(lseed);
-            Array.Reverse(seedbytes);
-            Console.WriteLine(
-                $"{(int) Seed} {lseed} {BitConverter.IsLittleEndian}\n" +
-                $"{BitConverter.ToString(seedbytes)}  " +
-                $"LO {BitConverter.ToString(BitConverter.GetBytes((uint) lseed))} | " +
-                $"HI {BitConverter.ToString(BitConverter.GetBytes((uint) (lseed >> 0x20)))} -> " +
-                $"{BitConverter.ToString(BitConverter.GetBytes((int)(lseed >> 0x20) + (int)Seed))}" +
-                $" ({(int)(lseed >> 0x20) + (int)Seed})"
-            );
-            int temp = ((int) ((int)Seed * -2092037281L >> 0x20) + (int) Seed) >> 0x10;
-            Console.WriteLine($"{(int) Seed * 0x41a7}, {temp}, {(temp) * Int32.MaxValue}");
+        public NollaPrng(double seed) {
+            Seed = seed;
+            Next();
+        }
 
-            Seed = ((int) Seed * 0x41a7 ) - (temp * int.MaxValue + (temp < 0 ? 1 : 0));
+        public double Next() {
+            Seed = ((int) Seed) * 16807 + ((int) Seed) / 127773 * -int.MaxValue;
             //it's abs+1, because M A G I C, damn it
             if (Seed < 0) Seed += int.MaxValue;
-            //Console.WriteLine($"{Seed}, {Seed / int.MaxValue == Seed * 4.6566128750000002e-10}, {BitConverter.ToString(BitConverter.GetBytes((int) -Seed))}");
             return Seed / int.MaxValue;
         }
 
-        byte[] Next16() {
+        public byte[] Next16() {
             var value = new byte[16];
             for (int i = 0; i < 4; i++) {
-                double valueee = Next() * int.MinValue;
-                Console.WriteLine($"{valueee}\n");
-                byte[] bytes = BitConverter.GetBytes((int) valueee);
+                byte[] bytes = BitConverter.GetBytes((int) (Next() * int.MinValue));
                 Buffer.BlockCopy(
                     bytes, 0,
                     value, i * 4,
                     4
                 );
             }
-            Console.WriteLine($"{BitConverter.ToString(value)}");
             return value;
         }
 
         public static byte[] Get16Seeded(int seed, int seedBase = SEED_BASE) {
-            var prng = new NollaPRNG(seed, seedBase);
+            var prng = new NollaPrng(seed, seedBase);
             return prng.Next16();
+        }
+
+        public static void DoMain(string[] args) {
+            foreach (var arg in args) {
+                if (uint.TryParse(arg, out var value)) {
+                    var prng = new NollaPrng(value);
+                    Console.WriteLine($"Next state for seed {value}: {prng.Seed}, error on float cast {prng.Seed - ((double) (float) (prng.Seed * ((double)1/int.MaxValue))) * (0x8000_0000)}");
+                    Console.WriteLine($"IV bytes for given seed are: {BitConverter.ToString(Get16Seeded((int) value))}");
+                }
+            }
         }
     }
 }
